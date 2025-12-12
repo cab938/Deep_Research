@@ -61,6 +61,8 @@ Set these before starting the service to control model selection, paths, and net
 | `DEEP_RESEARCH_WRITER_MODEL` | `openai:gpt-5` | Model for final report writing; falls back to `DEEP_RESEARCH_MODEL` if unset. |
 | `DEEP_RESEARCH_COMPRESS_MAX_TOKENS` | `32000` | Max tokens for compressed research responses. |
 | `DEEP_RESEARCH_WRITER_MAX_TOKENS` | `40000` | Max tokens for the final report writer. |
+| `DEEP_RESEARCH_MAX_ITERATIONS` | `15` | Maximum supervisor tool-call iterations before ending a run. |
+| `DEEP_RESEARCH_MAX_CONCURRENCY` | `3` | Maximum concurrent researcher agents launched per iteration. |
 | `THINKDEPTH_PORT` | `8000` | Port exposed by the FastAPI service inside the container. |
 | `THINKDEPTH_TASK_DIR` | `/tmp/thinkdepthai/tasks` | Directory for async task metadata used by `/research` in async mode. |
 | `THINKDEPTH_LOG_DIR` | `/tmp/thinkdepthai/logs` | Directory for log files. |
