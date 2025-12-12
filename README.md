@@ -45,6 +45,28 @@ uv run jupyter notebook thinkdepthai_deepresearch.ipynb
 - Logs rotate at midnight with one backup kept for roughly one day of retention.
 - Tail inside the container with `docker exec -it <container_name> tail -f /tmp/thinkdepthai/logs/thinkdepthai.log`.
 
+### Environment variables
+
+Set these before starting the service to control model selection, paths, and networking:
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `sk-your-key` | API key for the OpenAI-compatible endpoint. Required for model calls. |
+| `OPENAI_BASE_URL` | `http://localhost:1337/v1` | Base URL for the OpenAI-compatible endpoint (vLLM, llama.cpp, Azure). Defaults to the official API if unset. |
+| `TAVILY_API_KEY` | `tvly-dev-abc123` | API key for Tavily search, used by the research agents. |
+| `DEEP_RESEARCH_MODEL` | `openai:gpt-5` | Default chat model used across the pipeline. |
+| `DEEP_RESEARCH_SUMMARY_MODEL` | `openai:gpt-5` | Model for summarization steps; falls back to `DEEP_RESEARCH_MODEL` if unset. |
+| `DEEP_RESEARCH_COMPRESS_MODEL` | `openai:gpt-5` | Model for compressing research notes; falls back to `DEEP_RESEARCH_MODEL` if unset. |
+| `DEEP_RESEARCH_CREATIVE_MODEL` | `openai:gpt-5` | Creative model for draft generation; falls back to `DEEP_RESEARCH_MODEL` if unset. |
+| `DEEP_RESEARCH_WRITER_MODEL` | `openai:gpt-5` | Model for final report writing; falls back to `DEEP_RESEARCH_MODEL` if unset. |
+| `DEEP_RESEARCH_COMPRESS_MAX_TOKENS` | `32000` | Max tokens for compressed research responses. |
+| `DEEP_RESEARCH_WRITER_MAX_TOKENS` | `40000` | Max tokens for the final report writer. |
+| `THINKDEPTH_PORT` | `8000` | Port exposed by the FastAPI service inside the container. |
+| `THINKDEPTH_TASK_DIR` | `/tmp/thinkdepthai/tasks` | Directory for async task metadata used by `/research` in async mode. |
+| `THINKDEPTH_LOG_DIR` | `/tmp/thinkdepthai/logs` | Directory for log files. |
+| `THINKDEPTH_LOG_LEVEL` | `INFO` | Log level for all ThinkDepth.ai modules (`DEBUG`, `INFO`, `WARNING`, etc.). |
+| `THINKDEPTH_RUN_ID` | `demo1234` | Optional identifier appended to log entries for correlation; defaults to a random ID. |
+
 ### Experiments
 <a href="https://thinkdepth.ai">ThinkDepth.ai</a> deep research is ranked #1 and established a new state-of-art result on <a href="https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard/discussions/4/files">DeepResearch  Bench</a> on Nov 17th, 2025.
 * It outperformed Google Gemini 2.5 pro deep research by 2.78%.
