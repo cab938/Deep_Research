@@ -45,8 +45,11 @@ def _ensure_db_dir(url: str) -> None:
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _ensure_db_dir(DB_URL)
-        _engine = create_async_engine(DB_URL, future=True)
+        db_url = DB_URL
+        if db_url.startswith("sqlite:") and not db_url.startswith("sqlite+aiosqlite:"):
+            db_url = db_url.replace("sqlite:", "sqlite+aiosqlite:", 1)
+        _ensure_db_dir(db_url)
+        _engine = create_async_engine(db_url, future=True)
     return _engine
 
 
