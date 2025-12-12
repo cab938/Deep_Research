@@ -1,18 +1,16 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from deep_research.db import TaskRecordDB, init_db, session_scope, utcnow
 from deep_research.research_agent_full import agent
-
-TASK_DIR = Path(os.getenv("THINKDEPTH_TASK_DIR", "/tmp/thinkdepthai/tasks"))
-TASK_DIR.mkdir(parents=True, exist_ok=True)
 
 TaskStatus = Literal["pending", "running", "succeeded", "failed"]
 
@@ -43,73 +41,74 @@ class TaskRecord(BaseModel):
     updated_at: float
 
 
+def _record_from_db(row: TaskRecordDB) -> TaskRecord:
+    request_data = json.loads(row.request_json)
+    result_data = json.loads(row.result_json) if row.result_json else None
+    return TaskRecord(
+        task_id=row.task_id,
+        status=row.status,  # type: ignore[arg-type]
+        request=ResearchRequest(**request_data),
+        result=ResearchResponse(**result_data) if result_data else None,
+        error=row.error,
+        created_at=row.created_at.timestamp(),
+        updated_at=row.updated_at.timestamp(),
+    )
+
+
 class TaskStore:
-    def __init__(self, base_dir: Path):
-        self.base_dir = base_dir
-        self.tasks: Dict[str, TaskRecord] = {}
+    def __init__(self):
         self.lock = asyncio.Lock()
-        self._load_existing()
-
-    def _task_path(self, task_id: str) -> Path:
-        return self.base_dir / f"{task_id}.json"
-
-    def _persist(self, record: TaskRecord) -> None:
-        path = self._task_path(record.task_id)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(record.model_dump(), f)
-
-    def _load_existing(self) -> None:
-        if not self.base_dir.exists():
-            return
-        for path in self.base_dir.glob("*.json"):
-            try:
-                data = json.loads(path.read_text())
-                record = TaskRecord(**data)
-                # mark any in-flight tasks as failed because we cannot resume them after restart
-                if record.status in ("pending", "running"):
-                    record.status = "failed"
-                    record.error = "Server restarted while task was in progress"
-                self.tasks[record.task_id] = record
-            except Exception:
-                # skip corrupted entries
-                continue
 
     async def create(self, request: ResearchRequest) -> TaskRecord:
         async with self.lock:
             task_id = uuid4().hex
-            now = asyncio.get_event_loop().time()
-            record = TaskRecord(
+            now = utcnow()
+            db_row = TaskRecordDB(
                 task_id=task_id,
                 status="pending",
-                request=request,
-                result=None,
+                request_json=request.model_dump_json(),
+                result_json=None,
                 error=None,
+                pending_action_json=None,
                 created_at=now,
                 updated_at=now,
             )
-            self.tasks[task_id] = record
-            self._persist(record)
-            return record
+            async with session_scope() as session:
+                session.add(db_row)
+                await session.commit()
+            return _record_from_db(db_row)
 
     async def update(self, task_id: str, status: TaskStatus, result: Optional[ResearchResponse] = None, error: Optional[str] = None) -> Optional[TaskRecord]:
         async with self.lock:
-            record = self.tasks.get(task_id)
-            if not record:
-                return None
-            record.status = status
-            record.result = result
-            record.error = error
-            record.updated_at = asyncio.get_event_loop().time()
-            self._persist(record)
-            return record
+            async with session_scope() as session:
+                row = await session.get(TaskRecordDB, task_id)
+                if not row:
+                    return None
+                row.status = status  # type: ignore[assignment]
+                row.result_json = result.model_dump_json() if result else None
+                row.error = error
+                row.updated_at = utcnow()
+                await session.commit()
+                await session.refresh(row)
+                return _record_from_db(row)
 
     async def get(self, task_id: str) -> Optional[TaskRecord]:
         async with self.lock:
-            return self.tasks.get(task_id)
+            async with session_scope() as session:
+                result = await session.execute(select(TaskRecordDB).where(TaskRecordDB.task_id == task_id))
+                row = result.scalar_one_or_none()
+                if not row:
+                    return None
+                return _record_from_db(row)
 
 
-store = TaskStore(TASK_DIR)
+store = TaskStore()
 app = FastAPI(title="ThinkDepth.ai Deep Research")
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await init_db()
 
 
 def _build_state(query: str) -> Dict[str, Any]:

@@ -16,6 +16,8 @@ dependencies = [
 "jupyter>=1.0.0",
 "ipykernel>=6.20.0",
 "tavily-python>=0.5.0",
+"SQLAlchemy>=2.0.35",
+"aiosqlite>=0.20.0",
 ]
 
 [project.optional-dependencies]

@@ -3,7 +3,8 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV THINKDEPTH_LOG_DIR=/tmp/thinkdepthai/logs \
-    THINKDEPTH_LOG_LEVEL=INFO
+    THINKDEPTH_LOG_LEVEL=INFO \
+    THINKDEPTH_DB_URL=sqlite:////data/thinkdepthai/thinkdepthai.sqlite3
 
 WORKDIR /srv/app
 
@@ -11,7 +12,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p ${THINKDEPTH_LOG_DIR}
+RUN mkdir -p ${THINKDEPTH_LOG_DIR} /data/thinkdepthai
 
 COPY pyproject.toml README.md ./ 
 COPY src ./src
