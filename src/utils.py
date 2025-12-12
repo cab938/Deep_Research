@@ -10,6 +10,8 @@ from pathlib import Path
 from datetime import datetime
 from typing_extensions import Annotated, List, Literal
 
+import os
+
 from langchain.chat_models import init_chat_model 
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool, InjectedToolArg
@@ -17,6 +19,7 @@ from tavily import TavilyClient
 
 from deep_research.state_research import Summary
 from deep_research.prompts import summarize_webpage_prompt, report_generation_with_draft_insight_prompt
+from deep_research.logging_setup import get_logger
 
 # ===== UTILITY FUNCTIONS =====
 
@@ -39,10 +42,16 @@ def get_current_dir() -> Path:
 
 # ===== CONFIGURATION =====
 
-summarization_model = init_chat_model(model="openai:gpt-5")
-writer_model = init_chat_model(model="openai:gpt-5", max_tokens=32000)
+MODEL_ID = os.getenv("DEEP_RESEARCH_MODEL", "openai:gpt-5")
+SUMMARY_MODEL_ID = os.getenv("DEEP_RESEARCH_SUMMARY_MODEL", MODEL_ID)
+WRITER_MODEL_ID = os.getenv("DEEP_RESEARCH_WRITER_MODEL", MODEL_ID)
+WRITER_MAX_TOKENS = int(os.getenv("DEEP_RESEARCH_WRITER_MAX_TOKENS", "32000"))
+
+summarization_model = init_chat_model(model=SUMMARY_MODEL_ID)
+writer_model = init_chat_model(model=WRITER_MODEL_ID, max_tokens=WRITER_MAX_TOKENS)
 tavily_client = TavilyClient()
 MAX_CONTEXT_LENGTH = 250000
+logger = get_logger(__name__)
 
 # ===== SEARCH FUNCTIONS =====
 
@@ -66,12 +75,27 @@ def tavily_search_multiple(
 
     # Execute searches sequentially. Note: yon can use AsyncTavilyClient to parallelize this step.
     search_docs = []
+    logger.info(
+        "Executing Tavily search batch",
+        extra={
+            "query_count": len(search_queries),
+            "max_results": max_results,
+            "topic": topic,
+        },
+    )
     for query in search_queries:
         result = tavily_client.search(
             query,
             max_results=max_results,
             include_raw_content=include_raw_content,
             topic=topic
+        )
+        logger.info(
+            "Tavily query complete",
+            extra={
+                "query": query,
+                "result_count": len(result.get("results", [])),
+            },
         )
         search_docs.append(result)
 
@@ -89,6 +113,10 @@ def summarize_webpage_content(webpage_content: str) -> str:
     try:
         # Set up structured output model for summarization
         structured_model = summarization_model.with_structured_output(Summary)
+        logger.info(
+            "Summarizing webpage content",
+            extra={"content_length": len(webpage_content)},
+        )
 
         # Generate summary
         summary = structured_model.invoke([
@@ -103,11 +131,18 @@ def summarize_webpage_content(webpage_content: str) -> str:
             f"<summary>\n{summary.summary}\n</summary>\n\n"
             f"<key_excerpts>\n{summary.key_excerpts}\n</key_excerpts>"
         )
+        logger.info(
+            "Webpage summarization complete",
+            extra={
+                "summary_len": len(summary.summary or ""),
+                "excerpt_len": len(summary.key_excerpts or ""),
+            },
+        )
 
         return formatted_summary
 
     except Exception as e:
-        print(f"Failed to summarize webpage: {str(e)}")
+        logger.exception("Failed to summarize webpage content")
         return webpage_content[:1000] + "..." if len(webpage_content) > 1000 else webpage_content
 
 def deduplicate_search_results(search_results: List[dict]) -> dict:
@@ -127,6 +162,13 @@ def deduplicate_search_results(search_results: List[dict]) -> dict:
             if url not in unique_results:
                 unique_results[url] = result
 
+    logger.info(
+        "Search results deduplicated",
+        extra={
+            "input_count": sum(len(r.get("results", [])) for r in search_results),
+            "unique_count": len(unique_results),
+        },
+    )
     return unique_results
 
 def process_search_results(unique_results: dict) -> dict:
@@ -139,6 +181,10 @@ def process_search_results(unique_results: dict) -> dict:
         Dictionary of processed results with summaries
     """
     summarized_results = {}
+    logger.info(
+        "Processing search results for summarization",
+        extra={"unique_count": len(unique_results)},
+    )
 
     for url, result in unique_results.items():
         # Use existing content if no raw content for summarization
@@ -196,6 +242,14 @@ def tavily_search(
         Formatted string of search results with summaries
     """
     # Execute search for single query
+    logger.info(
+        "Tavily search started",
+        extra={
+            "query": query,
+            "max_results": max_results,
+            "topic": topic,
+        },
+    )
     search_results = tavily_search_multiple(
         [query],  # Convert single query to list for the internal function
         max_results=max_results,
@@ -263,6 +317,19 @@ def refine_draft_report(research_brief: Annotated[str, InjectedToolArg],
         date=get_today_str()
     )
 
+    logger.info(
+        "Refining draft report with findings",
+        extra={
+            "research_brief_len": len(research_brief or ""),
+            "findings_len": len(findings or ""),
+            "draft_report_len": len(draft_report or ""),
+        },
+    )
     draft_report = writer_model.invoke([HumanMessage(content=draft_report_prompt)])
+
+    logger.info(
+        "Refined draft report complete",
+        extra={"draft_report_len": len(draft_report.content or "")},
+    )
 
     return draft_report.content

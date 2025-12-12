@@ -11,6 +11,7 @@ maintaining isolated context windows for each research topic.
 """
 
 import asyncio
+import os
 
 from typing_extensions import Literal
 
@@ -33,6 +34,7 @@ from deep_research.state_multi_agent_supervisor import (
     ResearchComplete
 )
 from deep_research.utils import get_today_str, think_tool, refine_draft_report
+from deep_research.logging_setup import get_logger
 
 def get_notes_from_tool_calls(messages: list[BaseMessage]) -> list[str]:
     """Extract research notes from ToolMessage objects in supervisor message history.
@@ -68,7 +70,8 @@ except ImportError:
 # ===== CONFIGURATION =====
 
 supervisor_tools = [ConductResearch, ResearchComplete, think_tool,refine_draft_report]
-supervisor_model = init_chat_model(model="openai:gpt-5")
+SUPERVISOR_MODEL_ID = os.getenv("DEEP_RESEARCH_MODEL", "openai:gpt-5")
+supervisor_model = init_chat_model(model=SUPERVISOR_MODEL_ID)
 supervisor_model_with_tools = supervisor_model.bind_tools(supervisor_tools)
 
 # System constants
@@ -79,6 +82,7 @@ max_researcher_iterations = 15 # Calls to think_tool + ConductResearch + refine_
 # Maximum number of concurrent research agents the supervisor can launch
 # This is passed to the lead_researcher_prompt to limit parallel research tasks
 max_concurrent_researchers = 3
+logger = get_logger(__name__)
 
 # ===== SUPERVISOR NODES =====
 
@@ -97,6 +101,14 @@ async def supervisor(state: SupervisorState) -> Command[Literal["supervisor_tool
         Command to proceed to supervisor_tools node with updated state
     """
     supervisor_messages = state.get("supervisor_messages", [])
+    iteration = state.get("research_iterations", 0) + 1
+    logger.info(
+        "Supervisor planning",
+        extra={
+            "iteration": iteration,
+            "research_brief_len": len(state.get("research_brief", "") or ""),
+        },
+    )
 
     # Prepare system message with current date and constraints
 
@@ -109,6 +121,13 @@ async def supervisor(state: SupervisorState) -> Command[Literal["supervisor_tool
 
     # Make decision about next research steps
     response = await supervisor_model_with_tools.ainvoke(messages)
+    logger.info(
+        "Supervisor decision ready",
+        extra={
+            "iteration": iteration,
+            "tool_calls": len(response.tool_calls or []),
+        },
+    )
 
     return Command(
         goto="supervisor_tools",
@@ -136,6 +155,13 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
     supervisor_messages = state.get("supervisor_messages", [])
     research_iterations = state.get("research_iterations", 0)
     most_recent_message = supervisor_messages[-1]
+    logger.info(
+        "Supervisor tools dispatch",
+        extra={
+            "iteration": research_iterations,
+            "tool_calls": len(most_recent_message.tool_calls or []),
+        },
+    )
 
     # Initialize variables for single return pattern
     tool_messages = []
@@ -143,6 +169,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
     draft_report = ""
     next_step = "supervisor"  # Default next step
     should_end = False
+    refine_report_calls = []
 
     # Check exit criteria first
     exceeded_iterations = research_iterations >= max_researcher_iterations
@@ -155,6 +182,14 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
     if exceeded_iterations or no_tool_calls or research_complete:
         should_end = True
         next_step = END
+        reason = "complete_tool" if research_complete else "no_tool_calls" if no_tool_calls else "max_iterations"
+        logger.info(
+            "Supervisor ending research",
+            extra={
+                "iteration": research_iterations,
+                "reason": reason,
+            },
+        )
 
     else:
         # Execute ALL tool calls before deciding next step
@@ -177,6 +212,13 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
 
             # Handle think_tool calls (synchronous)
             for tool_call in think_tool_calls:
+                logger.info(
+                    "Executing think_tool",
+                    extra={
+                        "iteration": research_iterations,
+                        "tool_call_id": tool_call["id"],
+                    },
+                )
                 observation = think_tool.invoke(tool_call["args"])
                 tool_messages.append(
                     ToolMessage(
@@ -188,6 +230,13 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
 
             # Handle ConductResearch calls (asynchronous)
             if conduct_research_calls:
+                logger.info(
+                    "Launching ConductResearch agents",
+                    extra={
+                        "iteration": research_iterations,
+                        "agents": len(conduct_research_calls),
+                    },
+                )
                 # Launch parallel research agents
                 coros = [
                     researcher_agent.ainvoke({
@@ -201,6 +250,13 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
 
                 # Wait for all research to complete
                 tool_results = await asyncio.gather(*coros)
+                logger.info(
+                    "ConductResearch results received",
+                    extra={
+                        "iteration": research_iterations,
+                        "agents": len(conduct_research_calls),
+                    },
+                )
 
                 # Format research results as tool messages
                 # Each sub-agent returns compressed research findings in result["compressed_research"]
@@ -222,38 +278,71 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     for result in tool_results
                 ]
 
-            for tool_call in refine_report_calls: 
-              notes = get_notes_from_tool_calls(supervisor_messages)    
-              findings = "\n".join(notes)
+            for tool_call in refine_report_calls:
+                logger.info(
+                    "Refining draft report",
+                    extra={
+                        "iteration": research_iterations,
+                        "tool_call_id": tool_call["id"],
+                    },
+                )
+                notes = get_notes_from_tool_calls(supervisor_messages)
+                findings = "\n".join(notes)
 
-              draft_report = refine_draft_report.invoke({
+                draft_report = refine_draft_report.invoke({
                     "research_brief": state.get("research_brief", ""),
                     "findings": findings,
                     "draft_report": state.get("draft_report", "")
-              })
+                })
 
-              tool_messages.append(
-                ToolMessage(
-                    content=draft_report,
-                    name=tool_call["name"],
-                    tool_call_id=tool_call["id"]
+                tool_messages.append(
+                    ToolMessage(
+                        content=draft_report,
+                        name=tool_call["name"],
+                        tool_call_id=tool_call["id"]
+                    )
                 )
-              )
+                logger.info(
+                    "Draft report refined",
+                    extra={
+                        "iteration": research_iterations,
+                        "draft_report_len": len(draft_report or ""),
+                    },
+                )
 
         except Exception as e:
             should_end = True
             next_step = END
+            logger.exception(
+                "Supervisor tools execution failed",
+                extra={"iteration": research_iterations},
+            )
 
     # Single return point with appropriate state updates
     if should_end:
+        notes = get_notes_from_tool_calls(supervisor_messages)
+        logger.info(
+            "Supervisor returning aggregated notes",
+            extra={
+                "iteration": research_iterations,
+                "notes_count": len(notes),
+            },
+        )
         return Command(
             goto=next_step,
             update={
-                "notes": get_notes_from_tool_calls(supervisor_messages),
+                "notes": notes,
                 "research_brief": state.get("research_brief", "")
             }
         )
     elif len(refine_report_calls) > 0:
+        logger.info(
+            "Supervisor returning refined draft",
+            extra={
+                "iteration": research_iterations,
+                "raw_notes": len(all_raw_notes),
+            },
+        )
         return Command(
             goto=next_step,
             update={
@@ -263,6 +352,13 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
             }
         )        
     else:
+        logger.info(
+            "Supervisor continuing loop",
+            extra={
+                "iteration": research_iterations,
+                "raw_notes": len(all_raw_notes),
+            },
+        )
         return Command(
             goto=next_step,
             update={
@@ -280,4 +376,3 @@ supervisor_builder.add_node("supervisor", supervisor)
 supervisor_builder.add_node("supervisor_tools", supervisor_tools)
 supervisor_builder.add_edge(START, "supervisor")
 supervisor_agent = supervisor_builder.compile()
-

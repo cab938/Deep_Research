@@ -29,6 +29,22 @@ uv sync
 uv run jupyter notebook thinkdepthai_deepresearch.ipynb
 ```
 
+### Async API usage
+- Default behavior: `POST /research` runs synchronously and returns a `ResearchResponse`.
+- Async mode: set `"async_mode": true` in the request body to get back a `task_id` and `status: pending`. Poll `GET /research/{task_id}` to retrieve status and the completed response when ready. Task files are stored under `/tmp/thinkdepthai/tasks` by default (override with `THINKDEPTH_TASK_DIR`).
+- Example:
+  - Submit: `curl -X POST http://localhost:8005/research -H "Content-Type: application/json" -d '{"query":"...", "async_mode":true}'`
+  - Poll: `curl http://localhost:8005/research/<task_id>`
+
+### Model configuration
+- The agent uses OpenAI-compatible chat endpoints. Set `OPENAI_BASE_URL` and `OPENAI_API_KEY` to point at your self-hosted gateway (e.g., vLLM, llama.cpp server).
+- Choose models via `DEEP_RESEARCH_MODEL` (defaults to `openai:gpt-5`). Optional overrides: `DEEP_RESEARCH_SUMMARY_MODEL`, `DEEP_RESEARCH_COMPRESS_MODEL`, and `DEEP_RESEARCH_WRITER_MODEL` (defaults fall back to `DEEP_RESEARCH_MODEL`). `DEEP_RESEARCH_WRITER_MAX_TOKENS` and `DEEP_RESEARCH_COMPRESS_MAX_TOKENS` control output lengths.
+
+### Logging
+- Plain text logs write to `/tmp/thinkdepthai/logs/thinkdepthai.log` by default (configure with `THINKDEPTH_LOG_DIR` and `THINKDEPTH_LOG_LEVEL`).
+- Logs rotate at midnight with one backup kept for roughly one day of retention.
+- Tail inside the container with `docker exec -it <container_name> tail -f /tmp/thinkdepthai/logs/thinkdepthai.log`.
+
 ### Experiments
 <a href="https://thinkdepth.ai">ThinkDepth.ai</a> deep research is ranked #1 and established a new state-of-art result on <a href="https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard/discussions/4/files">DeepResearch  Bench</a> on Nov 17th, 2025.
 * It outperformed Google Gemini 2.5 pro deep research by 2.78%.

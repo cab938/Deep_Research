@@ -7,6 +7,7 @@ and synthesis to answer complex research questions.
 
 from typing_extensions import Literal
 
+import os
 from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, filter_messages
 from langchain.chat_models import init_chat_model
@@ -14,6 +15,7 @@ from langchain.chat_models import init_chat_model
 from deep_research.state_research import ResearcherState, ResearcherOutputState
 from deep_research.utils import tavily_search, get_today_str, think_tool
 from deep_research.prompts import research_agent_prompt, compress_research_system_prompt, compress_research_human_message
+from deep_research.logging_setup import get_logger
 
 # ===== CONFIGURATION =====
 
@@ -21,11 +23,17 @@ from deep_research.prompts import research_agent_prompt, compress_research_syste
 tools = [tavily_search, think_tool]
 tools_by_name = {tool.name: tool for tool in tools}
 
+MODEL_ID = os.getenv("DEEP_RESEARCH_MODEL", "openai:gpt-5")
+SUMMARY_MODEL_ID = os.getenv("DEEP_RESEARCH_SUMMARY_MODEL", MODEL_ID)
+COMPRESS_MODEL_ID = os.getenv("DEEP_RESEARCH_COMPRESS_MODEL", MODEL_ID)
+COMPRESS_MAX_TOKENS = int(os.getenv("DEEP_RESEARCH_COMPRESS_MAX_TOKENS", "32000"))
+
 # Initialize models
-model = init_chat_model(model="openai:gpt-5")
+model = init_chat_model(model=MODEL_ID)
 model_with_tools = model.bind_tools(tools)
-summarization_model = init_chat_model(model="openai:gpt-5")
-compress_model = init_chat_model(model="openai:gpt-5", max_tokens=32000) # model="anthropic:claude-sonnet-4-20250514", max_tokens=64000
+summarization_model = init_chat_model(model=SUMMARY_MODEL_ID)
+compress_model = init_chat_model(model=COMPRESS_MODEL_ID, max_tokens=COMPRESS_MAX_TOKENS) # model="anthropic:claude-sonnet-4-20250514", max_tokens=64000
+logger = get_logger(__name__)
 
 # ===== AGENT NODES =====
 
@@ -38,11 +46,27 @@ def llm_call(state: ResearcherState):
 
     Returns updated state with the model's response.
     """
+    logger.info(
+        "llm_call started",
+        extra={
+            "research_topic": state.get("research_topic", ""),
+            "message_count": len(state.get("researcher_messages", [])),
+        },
+    )
+
+    response = model_with_tools.invoke(
+        [SystemMessage(content=research_agent_prompt)] + state["researcher_messages"]
+    )
+    logger.info(
+        "llm_call complete",
+        extra={
+            "tool_call_count": len(response.tool_calls or []),
+            "research_topic": state.get("research_topic", ""),
+        },
+    )
     return {
         "researcher_messages": [
-            model_with_tools.invoke(
-                [SystemMessage(content=research_agent_prompt)] + state["researcher_messages"]
-            )
+            response
         ]
     }
 
@@ -58,6 +82,13 @@ def tool_node(state: ResearcherState):
     observations = []
     for tool_call in tool_calls:
         tool = tools_by_name[tool_call["name"]]
+        logger.info(
+            "Executing tool call",
+            extra={
+                "tool": tool_call["name"],
+                "research_topic": state.get("research_topic", ""),
+            },
+        )
         observations.append(tool.invoke(tool_call["args"]))
 
     # Create tool message outputs
@@ -79,6 +110,13 @@ def compress_research(state: ResearcherState) -> dict:
     """
 
     system_message = compress_research_system_prompt.format(date=get_today_str())
+    logger.info(
+        "Compressing research findings",
+        extra={
+            "research_topic": state.get("research_topic", ""),
+            "message_count": len(state.get("researcher_messages", [])),
+        },
+    )
     messages = [SystemMessage(content=system_message)] + state.get("researcher_messages", []) + [HumanMessage(content=compress_research_human_message)]
     response = compress_model.invoke(messages)
 
@@ -89,6 +127,15 @@ def compress_research(state: ResearcherState) -> dict:
             include_types=["tool", "ai"]
         )
     ]
+
+    logger.info(
+        "Compression complete",
+        extra={
+            "research_topic": state.get("research_topic", ""),
+            "raw_note_count": len(raw_notes),
+            "compressed_len": len(str(response.content) or ""),
+        },
+    )
 
     return {
         "compressed_research": str(response.content),
@@ -112,8 +159,21 @@ def should_continue(state: ResearcherState) -> Literal["tool_node", "compress_re
 
     # If the LLM makes a tool call, continue to tool execution
     if last_message.tool_calls:
+        logger.info(
+            "Continuing research loop",
+            extra={
+                "research_topic": state.get("research_topic", ""),
+                "tool_calls": len(last_message.tool_calls),
+            },
+        )
         return "tool_node"
     # Otherwise, we have a final answer
+    logger.info(
+        "Stopping research loop, compressing results",
+        extra={
+            "research_topic": state.get("research_topic", ""),
+        },
+    )
     return "compress_research"
 
 # ===== GRAPH CONSTRUCTION =====

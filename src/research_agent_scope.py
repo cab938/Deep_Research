@@ -9,6 +9,7 @@ The workflow uses structured output to make deterministic decisions about
 whether sufficient context exists to proceed with research.
 """
 
+import os
 from datetime import datetime
 from typing_extensions import Literal
 
@@ -19,6 +20,7 @@ from langgraph.types import Command
 
 from deep_research.prompts import transform_messages_into_research_topic_human_msg_prompt, draft_report_generation_prompt, clarify_with_user_instructions
 from deep_research.state_scope import AgentState, ResearchQuestion, AgentInputState, DraftReport
+from deep_research.logging_setup import get_logger
 
 # ===== UTILITY FUNCTIONS =====
 
@@ -29,8 +31,12 @@ def get_today_str() -> str:
 # ===== CONFIGURATION =====
 
 # Initialize model
-model = init_chat_model(model="openai:gpt-5")
-creative_model = init_chat_model(model="openai:gpt-5")
+MODEL_ID = os.getenv("DEEP_RESEARCH_MODEL", "openai:gpt-5")
+CREATIVE_MODEL_ID = os.getenv("DEEP_RESEARCH_CREATIVE_MODEL", MODEL_ID)
+
+model = init_chat_model(model=MODEL_ID)
+creative_model = init_chat_model(model=CREATIVE_MODEL_ID)
+logger = get_logger(__name__)
 
 # ===== WORKFLOW NODES =====
 
@@ -63,6 +69,10 @@ def clarify_with_user(state: AgentState) -> Command[Literal["write_research_brie
         )
     else:
     """
+    logger.info(
+        "Clarification step skipped, proceeding to write_research_brief",
+        extra={"message_count": len(state.get("messages", []))},
+    )
     return Command(
         goto="write_research_brief"
     )
@@ -78,6 +88,10 @@ def write_research_brief(state: AgentState) -> Command[Literal["write_draft_repo
     structured_output_model = model.with_structured_output(ResearchQuestion)
 
     # Generate research brief from conversation history
+    logger.info(
+        "Generating research brief",
+        extra={"message_count": len(state.get("messages", []))},
+    )
     response = structured_output_model.invoke([
         HumanMessage(content=transform_messages_into_research_topic_human_msg_prompt.format(
             messages=get_buffer_string(state.get("messages", [])),
@@ -85,7 +99,12 @@ def write_research_brief(state: AgentState) -> Command[Literal["write_draft_repo
         ))
     ])
 
-    # Update state with generated research brief and pass it to the supervisor
+    logger.info(
+        "Research brief generated",
+        extra={
+            "brief_len": len(response.research_brief or ""),
+        },
+    )
     return Command(
             goto="write_draft_report", 
             update={"research_brief": response.research_brief}
@@ -105,7 +124,22 @@ def write_draft_report(state: AgentState) -> Command[Literal["__end__"]]:
         date=get_today_str()
     )
 
+    logger.info(
+        "Draft report generation started",
+        extra={
+            "research_brief_len": len(research_brief or ""),
+            "model_id": CREATIVE_MODEL_ID,
+        },
+    )
+
     response = structured_output_model.invoke([HumanMessage(content=draft_report_prompt)])
+
+    logger.info(
+        "Draft report generation complete",
+        extra={
+            "draft_report_len": len(response.draft_report or ""),
+        },
+    )
 
     return {
         "research_brief": research_brief,

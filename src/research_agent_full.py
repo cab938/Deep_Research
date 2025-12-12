@@ -20,11 +20,17 @@ from deep_research.prompts import final_report_generation_with_helpfulness_insig
 from deep_research.state_scope import AgentState, AgentInputState
 from deep_research.research_agent_scope import clarify_with_user, write_research_brief, write_draft_report
 from deep_research.multi_agent_supervisor import supervisor_agent
+from deep_research.logging_setup import get_logger
 
 # ===== Config =====
 
 from langchain.chat_models import init_chat_model
-writer_model = init_chat_model(model="openai:gpt-5", max_tokens=40000) # model="anthropic:claude-sonnet-4-20250514", max_tokens=64000
+import os
+
+WRITER_MODEL_ID = os.getenv("DEEP_RESEARCH_WRITER_MODEL", os.getenv("DEEP_RESEARCH_MODEL", "openai:gpt-5"))
+WRITER_MAX_TOKENS = int(os.getenv("DEEP_RESEARCH_WRITER_MAX_TOKENS", "40000"))
+writer_model = init_chat_model(model=WRITER_MODEL_ID, max_tokens=WRITER_MAX_TOKENS)
+logger = get_logger(__name__)
 
 # ===== FINAL REPORT GENERATION =====
 
@@ -41,6 +47,15 @@ async def final_report_generation(state: AgentState):
 
     findings = "\n".join(notes)
 
+    logger.info(
+        "Final report generation started",
+        extra={
+            "research_brief_len": len(state.get("research_brief", "") or ""),
+            "findings_count": len(notes),
+            "draft_report_len": len(state.get("draft_report", "") or ""),
+        },
+    )
+
     final_report_prompt = final_report_generation_with_helpfulness_insightfulness_hit_citation_prompt.format(
         research_brief=state.get("research_brief", ""),
         findings=findings,
@@ -50,6 +65,14 @@ async def final_report_generation(state: AgentState):
     )
 
     final_report = await writer_model.ainvoke([HumanMessage(content=final_report_prompt)])
+
+    logger.info(
+        "Final report generation complete",
+        extra={
+            "final_report_len": len(final_report.content or ""),
+            "notes_used": len(notes),
+        },
+    )
 
     return {
         "final_report": final_report.content, 
