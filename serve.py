@@ -12,7 +12,7 @@ from sqlalchemy import select
 from deep_research.db import TaskRecordDB, init_db, session_scope, utcnow
 from deep_research.research_agent_full import agent
 
-TaskStatus = Literal["pending", "running", "succeeded", "failed"]
+TaskStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
 
 
 class ResearchRequest(BaseModel):
@@ -41,6 +41,14 @@ class TaskRecord(BaseModel):
     updated_at: float
 
 
+class ResearchTaskSummary(BaseModel):
+    task_id: str
+    status: TaskStatus
+    query: str
+    created_at: float
+    updated_at: float
+
+
 def _record_from_db(row: TaskRecordDB) -> TaskRecord:
     request_data = json.loads(row.request_json)
     result_data = json.loads(row.result_json) if row.result_json else None
@@ -58,6 +66,7 @@ def _record_from_db(row: TaskRecordDB) -> TaskRecord:
 class TaskStore:
     def __init__(self):
         self.lock = asyncio.Lock()
+        self.running_tasks: Dict[str, asyncio.Task] = {}
 
     async def create(self, request: ResearchRequest) -> TaskRecord:
         async with self.lock:
@@ -99,6 +108,41 @@ class TaskStore:
                 row = result.scalar_one_or_none()
                 if not row:
                     return None
+                return _record_from_db(row)
+
+    async def list(self, status: TaskStatus | None = None) -> List[TaskRecord]:
+        async with self.lock:
+            async with session_scope() as session:
+                stmt = select(TaskRecordDB).order_by(TaskRecordDB.created_at.desc())
+                if status is not None:
+                    stmt = stmt.where(TaskRecordDB.status == status)
+                result = await session.execute(stmt)
+                rows = result.scalars().all()
+                return [_record_from_db(row) for row in rows]
+
+    async def attach_task_handle(self, task_id: str, task: asyncio.Task) -> None:
+        async with self.lock:
+            self.running_tasks[task_id] = task
+
+    async def pop_task_handle(self, task_id: str) -> Optional[asyncio.Task]:
+        async with self.lock:
+            return self.running_tasks.pop(task_id, None)
+
+    async def cancel_task(self, task_id: str) -> Optional[TaskRecord]:
+        async with self.lock:
+            task = self.running_tasks.get(task_id)
+            if task:
+                task.cancel()
+            async with session_scope() as session:
+                row = await session.get(TaskRecordDB, task_id)
+                if not row:
+                    return None
+                row.status = "cancelled"  # type: ignore[assignment]
+                row.error = "cancelled by user request"
+                row.result_json = None
+                row.updated_at = utcnow()
+                await session.commit()
+                await session.refresh(row)
                 return _record_from_db(row)
 
 
@@ -144,15 +188,21 @@ async def _run_task(task_id: str, request: ResearchRequest) -> None:
         result = await agent.ainvoke(state)
         response = _response_from_agent_result(result, task_id=task_id, status="succeeded")
         await store.update(task_id, status="succeeded", result=response)
+    except asyncio.CancelledError:
+        await store.update(task_id, status="cancelled", error="cancelled by user request")
+        raise
     except Exception as exc:  # pragma: no cover
         await store.update(task_id, status="failed", error=str(exc))
+    finally:
+        await store.pop_task_handle(task_id)
 
 
 @app.post("/research", response_model=ResearchResponse, status_code=200)
 async def run_research(payload: ResearchRequest) -> ResearchResponse:
     if payload.async_mode:
         record = await store.create(payload)
-        asyncio.create_task(_run_task(record.task_id, payload))
+        task = asyncio.create_task(_run_task(record.task_id, payload))
+        await store.attach_task_handle(record.task_id, task)
         return ResearchResponse(task_id=record.task_id, status="pending")
 
     try:
@@ -178,6 +228,49 @@ async def get_research(task_id: str) -> ResearchResponse:
         status=record.status,
         error=record.error,
     )
+
+
+@app.get("/research", response_model=List[ResearchTaskSummary])
+async def list_research(status: TaskStatus | None = None) -> List[ResearchTaskSummary]:
+    records = await store.list(status=status)
+    return [
+        ResearchTaskSummary(
+            task_id=record.task_id,
+            status=record.status,
+            query=record.request.query,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+        for record in records
+    ]
+
+
+@app.post("/research/{task_id}/cancel", response_model=ResearchResponse)
+async def cancel_research(task_id: str) -> ResearchResponse:
+    record = await store.get(task_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if record.status in {"succeeded", "failed", "cancelled"}:
+        return record.result or ResearchResponse(task_id=task_id, status=record.status, error=record.error)
+
+    if record.status == "pending":
+        cancelled = await store.cancel_task(task_id)
+        if not cancelled:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return ResearchResponse(task_id=task_id, status="cancelled", error="cancelled by user request")
+
+    # running
+    await store.cancel_task(task_id)
+    handle = await store.pop_task_handle(task_id)
+    if handle:
+        try:
+            await asyncio.wait_for(handle, timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            pass
+    return ResearchResponse(task_id=task_id, status="cancelled", error="cancelled by user request")
 
 
 if __name__ == "__main__":

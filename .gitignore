@@ -1,0 +1,12 @@
+# Ignore all files in env directory
+/env/*
+
+# But keep the directory itself
+!.gitignore
+
+# Ignore all .env files elsewhere
+.env
+
+# Generated logs and scratch data
+mcp-logs/
+old/

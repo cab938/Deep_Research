@@ -32,9 +32,12 @@ uv run jupyter notebook thinkdepthai_deepresearch.ipynb
 ### Async API usage
 - Default behavior: `POST /research` runs synchronously and returns a `ResearchResponse`.
 - Async mode: set `"async_mode": true` in the request body to get back a `task_id` and `status: pending`. Poll `GET /research/{task_id}` to retrieve status and the completed response when ready. Task files are stored under `/tmp/thinkdepthai/tasks` by default (override with `THINKDEPTH_TASK_DIR`).
+- If you lose a `task_id`, list known tasks with `GET /research` and match on the stored `query`.
 - Example:
   - Submit: `curl -X POST http://localhost:8005/research -H "Content-Type: application/json" -d '{"query":"...", "async_mode":true}'`
+  - List: `curl http://localhost:8005/research`
   - Poll: `curl http://localhost:8005/research/<task_id>`
+  - Cancel: `curl -X POST http://localhost:8005/research/<task_id>/cancel`
 
 ### Model configuration
 - The agent uses OpenAI-compatible chat endpoints. Set `OPENAI_BASE_URL` and `OPENAI_API_KEY` to point at your self-hosted gateway (e.g., vLLM, llama.cpp server).
