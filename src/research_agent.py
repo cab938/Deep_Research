@@ -35,6 +35,11 @@ summarization_model = init_chat_model(model=SUMMARY_MODEL_ID)
 compress_model = init_chat_model(model=COMPRESS_MODEL_ID, max_tokens=COMPRESS_MAX_TOKENS) # model="anthropic:claude-sonnet-4-20250514", max_tokens=64000
 logger = get_logger(__name__)
 
+def _truncate_text(text: str, limit: int = 200) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit] + "..."
+
 # ===== AGENT NODES =====
 
 def llm_call(state: ResearcherState):
@@ -51,17 +56,27 @@ def llm_call(state: ResearcherState):
         extra={
             "research_topic": state.get("research_topic", ""),
             "message_count": len(state.get("researcher_messages", [])),
+            "task_id": state.get("task_id"),
         },
     )
 
-    response = model_with_tools.invoke(
-        [SystemMessage(content=research_agent_prompt)] + state["researcher_messages"]
-    )
+    system_prompt = research_agent_prompt.format(date=get_today_str())
+    try:
+        response = model_with_tools.invoke(
+            [SystemMessage(content=system_prompt)] + state["researcher_messages"]
+        )
+    except Exception:
+        logger.exception(
+            "llm_call failed",
+            extra={"research_topic": state.get("research_topic", "")},
+        )
+        raise
     logger.info(
         "llm_call complete",
         extra={
             "tool_call_count": len(response.tool_calls or []),
             "research_topic": state.get("research_topic", ""),
+            "task_id": state.get("task_id"),
         },
     )
     return {
@@ -87,9 +102,21 @@ def tool_node(state: ResearcherState):
             extra={
                 "tool": tool_call["name"],
                 "research_topic": state.get("research_topic", ""),
+                "task_id": state.get("task_id"),
+                "tool_args_preview": _truncate_text(str(tool_call.get("args", ""))),
             },
         )
-        observations.append(tool.invoke(tool_call["args"]))
+        try:
+            observations.append(tool.invoke(tool_call["args"]))
+        except Exception:
+            logger.exception(
+                "Tool call failed",
+                extra={
+                    "tool": tool_call["name"],
+                    "research_topic": state.get("research_topic", ""),
+                },
+            )
+            raise
 
     # Create tool message outputs
     tool_outputs = [
@@ -115,10 +142,19 @@ def compress_research(state: ResearcherState) -> dict:
         extra={
             "research_topic": state.get("research_topic", ""),
             "message_count": len(state.get("researcher_messages", [])),
+            "task_id": state.get("task_id"),
         },
     )
-    messages = [SystemMessage(content=system_message)] + state.get("researcher_messages", []) + [HumanMessage(content=compress_research_human_message)]
-    response = compress_model.invoke(messages)
+    human_message = compress_research_human_message.format(research_topic=state.get("research_topic", ""))
+    messages = [SystemMessage(content=system_message)] + state.get("researcher_messages", []) + [HumanMessage(content=human_message)]
+    try:
+        response = compress_model.invoke(messages)
+    except Exception:
+        logger.exception(
+            "Compression failed",
+            extra={"research_topic": state.get("research_topic", "")},
+        )
+        raise
 
     # Extract raw notes from tool and AI messages
     raw_notes = [
@@ -134,6 +170,7 @@ def compress_research(state: ResearcherState) -> dict:
             "research_topic": state.get("research_topic", ""),
             "raw_note_count": len(raw_notes),
             "compressed_len": len(str(response.content) or ""),
+            "task_id": state.get("task_id"),
         },
     )
 
@@ -159,19 +196,21 @@ def should_continue(state: ResearcherState) -> Literal["tool_node", "compress_re
 
     # If the LLM makes a tool call, continue to tool execution
     if last_message.tool_calls:
-        logger.info(
-            "Continuing research loop",
-            extra={
-                "research_topic": state.get("research_topic", ""),
-                "tool_calls": len(last_message.tool_calls),
-            },
-        )
+    logger.info(
+        "Continuing research loop",
+        extra={
+            "research_topic": state.get("research_topic", ""),
+            "tool_calls": len(last_message.tool_calls),
+            "task_id": state.get("task_id"),
+        },
+    )
         return "tool_node"
     # Otherwise, we have a final answer
     logger.info(
         "Stopping research loop, compressing results",
         extra={
             "research_topic": state.get("research_topic", ""),
+            "task_id": state.get("task_id"),
         },
     )
     return "compress_research"

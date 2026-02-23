@@ -71,7 +71,10 @@ def clarify_with_user(state: AgentState) -> Command[Literal["write_research_brie
     """
     logger.info(
         "Clarification step skipped, proceeding to write_research_brief",
-        extra={"message_count": len(state.get("messages", []))},
+        extra={
+            "message_count": len(state.get("messages", [])),
+            "task_id": state.get("task_id"),
+        },
     )
     return Command(
         goto="write_research_brief"
@@ -90,19 +93,27 @@ def write_research_brief(state: AgentState) -> Command[Literal["write_draft_repo
     # Generate research brief from conversation history
     logger.info(
         "Generating research brief",
-        extra={"message_count": len(state.get("messages", []))},
+        extra={
+            "message_count": len(state.get("messages", [])),
+            "task_id": state.get("task_id"),
+        },
     )
-    response = structured_output_model.invoke([
-        HumanMessage(content=transform_messages_into_research_topic_human_msg_prompt.format(
-            messages=get_buffer_string(state.get("messages", [])),
-            date=get_today_str()
-        ))
-    ])
+    try:
+        response = structured_output_model.invoke([
+            HumanMessage(content=transform_messages_into_research_topic_human_msg_prompt.format(
+                messages=get_buffer_string(state.get("messages", [])),
+                date=get_today_str()
+            ))
+        ])
+    except Exception:
+        logger.exception("Research brief generation failed")
+        raise
 
     logger.info(
         "Research brief generated",
         extra={
             "brief_len": len(response.research_brief or ""),
+            "task_id": state.get("task_id"),
         },
     )
     return Command(
@@ -129,15 +140,21 @@ def write_draft_report(state: AgentState) -> Command[Literal["__end__"]]:
         extra={
             "research_brief_len": len(research_brief or ""),
             "model_id": CREATIVE_MODEL_ID,
+            "task_id": state.get("task_id"),
         },
     )
 
-    response = structured_output_model.invoke([HumanMessage(content=draft_report_prompt)])
+    try:
+        response = structured_output_model.invoke([HumanMessage(content=draft_report_prompt)])
+    except Exception:
+        logger.exception("Draft report generation failed")
+        raise
 
     logger.info(
         "Draft report generation complete",
         extra={
             "draft_report_len": len(response.draft_report or ""),
+            "task_id": state.get("task_id"),
         },
     )
 

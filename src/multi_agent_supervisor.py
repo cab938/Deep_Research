@@ -36,6 +36,11 @@ from deep_research.state_multi_agent_supervisor import (
 from deep_research.utils import get_today_str, think_tool, refine_draft_report
 from deep_research.logging_setup import get_logger
 
+def _truncate_text(text: str, limit: int = 200) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit] + "..."
+
 def get_notes_from_tool_calls(messages: list[BaseMessage]) -> list[str]:
     """Extract research notes from ToolMessage objects in supervisor message history.
 
@@ -101,12 +106,14 @@ async def supervisor(state: SupervisorState) -> Command[Literal["supervisor_tool
         Command to proceed to supervisor_tools node with updated state
     """
     supervisor_messages = state.get("supervisor_messages", [])
+    task_id = state.get("task_id")
     iteration = state.get("research_iterations", 0) + 1
     logger.info(
         "Supervisor planning",
         extra={
             "iteration": iteration,
             "research_brief_len": len(state.get("research_brief", "") or ""),
+            "task_id": task_id,
         },
     )
 
@@ -120,12 +127,24 @@ async def supervisor(state: SupervisorState) -> Command[Literal["supervisor_tool
     messages = [SystemMessage(content=system_message)] + supervisor_messages
 
     # Make decision about next research steps
-    response = await supervisor_model_with_tools.ainvoke(messages)
+    try:
+        response = await supervisor_model_with_tools.ainvoke(messages)
+    except Exception:
+        logger.exception(
+            "Supervisor planning failed",
+            extra={
+                "iteration": iteration,
+                "message_count": len(messages),
+            },
+        )
+        raise
     logger.info(
         "Supervisor decision ready",
         extra={
             "iteration": iteration,
             "tool_calls": len(response.tool_calls or []),
+            "tool_names": [call.get("name") for call in response.tool_calls or []],
+            "task_id": task_id,
         },
     )
 
@@ -153,6 +172,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
         Command to continue supervision, end process, or handle errors
     """
     supervisor_messages = state.get("supervisor_messages", [])
+    task_id = state.get("task_id")
     research_iterations = state.get("research_iterations", 0)
     most_recent_message = supervisor_messages[-1]
     logger.info(
@@ -160,6 +180,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
         extra={
             "iteration": research_iterations,
             "tool_calls": len(most_recent_message.tool_calls or []),
+            "task_id": task_id,
         },
     )
 
@@ -188,6 +209,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
             extra={
                 "iteration": research_iterations,
                 "reason": reason,
+                "task_id": task_id,
             },
         )
 
@@ -217,6 +239,9 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     extra={
                         "iteration": research_iterations,
                         "tool_call_id": tool_call["id"],
+                        "task_id": task_id,
+                        "reflection_len": len(tool_call["args"].get("reflection", "")),
+                        "reflection_preview": _truncate_text(tool_call["args"].get("reflection", "")),
                     },
                 )
                 observation = think_tool.invoke(tool_call["args"])
@@ -235,6 +260,11 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     extra={
                         "iteration": research_iterations,
                         "agents": len(conduct_research_calls),
+                        "task_id": task_id,
+                        "topic_previews": [
+                            _truncate_text(call["args"].get("research_topic", ""), 120)
+                            for call in conduct_research_calls
+                        ],
                     },
                 )
                 # Launch parallel research agents
@@ -243,7 +273,8 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                         "researcher_messages": [
                             HumanMessage(content=tool_call["args"]["research_topic"])
                         ],
-                        "research_topic": tool_call["args"]["research_topic"]
+                        "research_topic": tool_call["args"]["research_topic"],
+                        "task_id": task_id,
                     }) 
                     for tool_call in conduct_research_calls
                 ]
@@ -255,6 +286,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     extra={
                         "iteration": research_iterations,
                         "agents": len(conduct_research_calls),
+                        "task_id": task_id,
                     },
                 )
 
@@ -284,6 +316,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     extra={
                         "iteration": research_iterations,
                         "tool_call_id": tool_call["id"],
+                        "task_id": task_id,
                     },
                 )
                 notes = get_notes_from_tool_calls(supervisor_messages)
@@ -307,15 +340,22 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     extra={
                         "iteration": research_iterations,
                         "draft_report_len": len(draft_report or ""),
+                        "task_id": task_id,
                     },
                 )
 
-        except Exception as e:
+        except Exception:
             should_end = True
             next_step = END
             logger.exception(
                 "Supervisor tools execution failed",
-                extra={"iteration": research_iterations},
+                extra={
+                    "iteration": research_iterations,
+                    "think_tool_calls": len(think_tool_calls),
+                    "conduct_research_calls": len(conduct_research_calls),
+                    "refine_report_calls": len(refine_report_calls),
+                    "task_id": task_id,
+                },
             )
 
     # Single return point with appropriate state updates
@@ -326,6 +366,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
             extra={
                 "iteration": research_iterations,
                 "notes_count": len(notes),
+                "task_id": task_id,
             },
         )
         return Command(
@@ -341,6 +382,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
             extra={
                 "iteration": research_iterations,
                 "raw_notes": len(all_raw_notes),
+                "task_id": task_id,
             },
         )
         return Command(
@@ -357,6 +399,7 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
             extra={
                 "iteration": research_iterations,
                 "raw_notes": len(all_raw_notes),
+                "task_id": task_id,
             },
         )
         return Command(

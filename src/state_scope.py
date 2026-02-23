@@ -30,6 +30,8 @@ class AgentState(MessagesState):
 
     # Research brief generated from user conversation history
     research_brief: Optional[str]
+    # Task id for tracing and artifact export
+    task_id: Optional[str]
     # Messages exchanged with the supervisor agent for coordination
     supervisor_messages: Annotated[Sequence[BaseMessage], add_messages]
     # Raw unprocessed research notes collected during the research phase
@@ -40,6 +42,8 @@ class AgentState(MessagesState):
     draft_report: str
     # Final formatted research report
     final_report: str
+    # Supervisor iteration count
+    research_iterations: int = 0
 
 # ===== STRUCTURED OUTPUT SCHEMAS =====
 

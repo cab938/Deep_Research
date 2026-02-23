@@ -57,6 +57,17 @@ Set these before starting the service to control model selection, paths, and net
 | `OPENAI_API_KEY` | `sk-your-key` | API key for the OpenAI-compatible endpoint. Required for model calls. |
 | `OPENAI_BASE_URL` | `http://localhost:1337/v1` | Base URL for the OpenAI-compatible endpoint (vLLM, llama.cpp, Azure). Defaults to the official API if unset. |
 | `TAVILY_API_KEY` | `tvly-dev-abc123` | API key for Tavily search, used by the research agents. |
+| `TAVILY_MAX_RESULTS` | `3` | Max results per Tavily query; defaults to 3 if unset. |
+| `TAVILY_TOPIC` | `general` | Tavily topic filter (`general`, `news`, `finance`); defaults to `general` if unset. |
+| `TAVILY_SEARCH_DEPTH` | `basic` | Optional Tavily search depth (`basic`, `advanced`, `fast`, `ultra-fast`). |
+| `TAVILY_TIME_RANGE` | `week` | Optional time filter (`day`, `week`, `month`, `year`). |
+| `TAVILY_DAYS` | `30` | Optional "last N days" filter. |
+| `TAVILY_INCLUDE_DOMAINS` | `canada.ca,saskatchewan.ca` | Optional comma-separated allowlist. |
+| `TAVILY_EXCLUDE_DOMAINS` | `reddit.com,medium.com` | Optional comma-separated blocklist. |
+| `TAVILY_INCLUDE_ANSWER` | `false` | Optional Tavily answer field (`true`, `false`, `basic`, `advanced`). |
+| `TAVILY_INCLUDE_RAW_CONTENT` | `true` | Include raw content (`true`, `false`, `markdown`, `text`); defaults to `true` if unset. |
+| `TAVILY_TIMEOUT_SECONDS` | `60` | Optional per-request timeout in seconds. |
+| `TAVILY_RAW_CONTENT_MAX_CHARS` | `250000` | Raw content truncation limit before summarization. |
 | `DEEP_RESEARCH_MODEL` | `openai:gpt-5` | Default chat model used across the pipeline. |
 | `DEEP_RESEARCH_SUMMARY_MODEL` | `openai:gpt-5` | Model for summarization steps; falls back to `DEEP_RESEARCH_MODEL` if unset. |
 | `DEEP_RESEARCH_COMPRESS_MODEL` | `openai:gpt-5` | Model for compressing research notes; falls back to `DEEP_RESEARCH_MODEL` if unset. |
@@ -66,6 +77,7 @@ Set these before starting the service to control model selection, paths, and net
 | `DEEP_RESEARCH_WRITER_MAX_TOKENS` | `40000` | Max tokens for the final report writer. |
 | `DEEP_RESEARCH_MAX_ITERATIONS` | `15` | Maximum supervisor tool-call iterations before ending a run. |
 | `DEEP_RESEARCH_MAX_CONCURRENCY` | `3` | Maximum concurrent researcher agents launched per iteration. |
+| `LANGGRAPH_RECURSION_LIMIT` | `100` | Max LangGraph steps before aborting a run. Increase if you see GRAPH_RECURSION_LIMIT errors. |
 | `THINKDEPTH_PORT` | `8000` | Port exposed by the FastAPI service inside the container. |
 | `THINKDEPTH_TASK_DIR` | `/tmp/thinkdepthai/tasks` | Directory for async task metadata used by `/research` in async mode. |
 | `THINKDEPTH_LOG_DIR` | `/tmp/thinkdepthai/logs` | Directory for log files. |

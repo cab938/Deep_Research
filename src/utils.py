@@ -50,16 +50,178 @@ WRITER_MAX_TOKENS = int(os.getenv("DEEP_RESEARCH_WRITER_MAX_TOKENS", "32000"))
 summarization_model = init_chat_model(model=SUMMARY_MODEL_ID)
 writer_model = init_chat_model(model=WRITER_MODEL_ID, max_tokens=WRITER_MAX_TOKENS)
 tavily_client = TavilyClient()
-MAX_CONTEXT_LENGTH = 250000
+DEFAULT_TAVILY_RAW_CONTENT_MAX_CHARS = 250000
 logger = get_logger(__name__)
 
 # ===== SEARCH FUNCTIONS =====
+
+def _get_env_str(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+def _parse_bool(value: str) -> bool | None:
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+def _get_env_bool(name: str) -> bool | None:
+    value = _get_env_str(name)
+    if value is None:
+        return None
+    parsed = _parse_bool(value)
+    if parsed is None:
+        logger.warning("Invalid bool env var", extra={"name": name, "value": value})
+    return parsed
+
+def _get_env_int(name: str) -> int | None:
+    value = _get_env_str(name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid int env var", extra={"name": name, "value": value})
+        return None
+
+def _get_env_float(name: str) -> float | None:
+    value = _get_env_str(name)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid float env var", extra={"name": name, "value": value})
+        return None
+
+def _get_env_csv(name: str) -> list[str] | None:
+    value = _get_env_str(name)
+    if value is None:
+        return None
+    parts = [part.strip() for part in value.split(",")]
+    items = [part for part in parts if part]
+    return items or None
+
+def _get_env_tavily_search_depth() -> str | None:
+    value = _get_env_str("TAVILY_SEARCH_DEPTH")
+    if value is None:
+        return None
+    lowered = value.lower()
+    allowed = {"basic", "advanced", "fast", "ultra-fast"}
+    if lowered in allowed:
+        return lowered
+    logger.warning("Invalid Tavily search_depth", extra={"value": value})
+    return None
+
+def _get_env_tavily_topic() -> str | None:
+    value = _get_env_str("TAVILY_TOPIC")
+    if value is None:
+        return None
+    lowered = value.lower()
+    allowed = {"general", "news", "finance"}
+    if lowered in allowed:
+        return lowered
+    logger.warning("Invalid Tavily topic", extra={"value": value})
+    return None
+
+def _get_env_tavily_time_range() -> str | None:
+    value = _get_env_str("TAVILY_TIME_RANGE")
+    if value is None:
+        return None
+    lowered = value.lower()
+    allowed = {"day", "week", "month", "year"}
+    if lowered in allowed:
+        return lowered
+    logger.warning("Invalid Tavily time_range", extra={"value": value})
+    return None
+
+def _get_env_tavily_include_answer() -> bool | str | None:
+    value = _get_env_str("TAVILY_INCLUDE_ANSWER")
+    if value is None:
+        return None
+    lowered = value.lower()
+    if lowered in {"basic", "advanced"}:
+        return lowered
+    parsed_bool = _parse_bool(value)
+    if parsed_bool is not None:
+        return parsed_bool
+    logger.warning("Invalid Tavily include_answer", extra={"value": value})
+    return None
+
+def _get_env_tavily_include_raw_content() -> bool | str | None:
+    value = _get_env_str("TAVILY_INCLUDE_RAW_CONTENT")
+    if value is None:
+        return None
+    lowered = value.lower()
+    if lowered in {"markdown", "text"}:
+        return lowered
+    parsed_bool = _parse_bool(value)
+    if parsed_bool is not None:
+        return parsed_bool
+    logger.warning("Invalid Tavily include_raw_content", extra={"value": value})
+    return None
+
+def _build_tavily_search_kwargs(*, max_results: int, topic: str, include_raw_content: bool | str) -> dict[str, object]:
+    env_search_depth = _get_env_tavily_search_depth()
+    env_topic = _get_env_tavily_topic()
+    env_time_range = _get_env_tavily_time_range()
+    env_start_date = _get_env_str("TAVILY_START_DATE")
+    env_end_date = _get_env_str("TAVILY_END_DATE")
+    env_days = _get_env_int("TAVILY_DAYS")
+    env_max_results = _get_env_int("TAVILY_MAX_RESULTS")
+    env_include_domains = _get_env_csv("TAVILY_INCLUDE_DOMAINS")
+    env_exclude_domains = _get_env_csv("TAVILY_EXCLUDE_DOMAINS")
+    env_include_answer = _get_env_tavily_include_answer()
+    env_include_raw_content = _get_env_tavily_include_raw_content()
+    env_timeout = _get_env_float("TAVILY_TIMEOUT_SECONDS")
+    env_country = _get_env_str("TAVILY_COUNTRY")
+    env_auto_parameters = _get_env_bool("TAVILY_AUTO_PARAMETERS")
+
+    resolved_topic = env_topic or topic
+    resolved_max_results = env_max_results if env_max_results is not None else max_results
+    resolved_include_raw_content = env_include_raw_content if env_include_raw_content is not None else include_raw_content
+
+    kwargs: dict[str, object] = {
+        "topic": resolved_topic,
+        "max_results": resolved_max_results,
+        "include_raw_content": resolved_include_raw_content,
+    }
+
+    if env_search_depth is not None:
+        kwargs["search_depth"] = env_search_depth
+    if env_time_range is not None:
+        kwargs["time_range"] = env_time_range
+    if env_start_date is not None:
+        kwargs["start_date"] = env_start_date
+    if env_end_date is not None:
+        kwargs["end_date"] = env_end_date
+    if env_days is not None:
+        kwargs["days"] = env_days
+    if env_include_domains is not None:
+        kwargs["include_domains"] = env_include_domains
+    if env_exclude_domains is not None:
+        kwargs["exclude_domains"] = env_exclude_domains
+    if env_include_answer is not None:
+        kwargs["include_answer"] = env_include_answer
+    if env_timeout is not None:
+        kwargs["timeout"] = env_timeout
+    if env_country is not None:
+        kwargs["country"] = env_country
+    if env_auto_parameters is not None:
+        kwargs["auto_parameters"] = env_auto_parameters
+
+    return kwargs
 
 def tavily_search_multiple(
     search_queries: List[str], 
     max_results: int = 3, 
     topic: Literal["general", "news", "finance"] = "general", 
-    include_raw_content: bool = True, 
+    include_raw_content: bool | Literal["markdown", "text"] = True,
 ) -> List[dict]:
     """Perform search using Tavily API for multiple queries.
 
@@ -75,21 +237,38 @@ def tavily_search_multiple(
 
     # Execute searches sequentially. Note: yon can use AsyncTavilyClient to parallelize this step.
     search_docs = []
+    kwargs = _build_tavily_search_kwargs(
+        max_results=max_results,
+        topic=topic,
+        include_raw_content=include_raw_content,
+    )
     logger.info(
         "Executing Tavily search batch",
         extra={
             "query_count": len(search_queries),
-            "max_results": max_results,
-            "topic": topic,
+            "search_depth": kwargs.get("search_depth"),
+            "topic": kwargs.get("topic"),
+            "time_range": kwargs.get("time_range"),
+            "days": kwargs.get("days"),
+            "max_results": kwargs.get("max_results"),
+            "include_domains": kwargs.get("include_domains"),
+            "exclude_domains": kwargs.get("exclude_domains"),
+            "include_answer": kwargs.get("include_answer"),
+            "include_raw_content": kwargs.get("include_raw_content"),
+            "timeout": kwargs.get("timeout"),
+            "country": kwargs.get("country"),
+            "auto_parameters": kwargs.get("auto_parameters"),
         },
     )
     for query in search_queries:
-        result = tavily_client.search(
-            query,
-            max_results=max_results,
-            include_raw_content=include_raw_content,
-            topic=topic
-        )
+        try:
+            result = tavily_client.search(query, **kwargs)
+        except Exception:
+            logger.exception(
+                "Tavily query failed",
+                extra={"query": query},
+            )
+            raise
         logger.info(
             "Tavily query complete",
             extra={
@@ -191,8 +370,11 @@ def process_search_results(unique_results: dict) -> dict:
         if not result.get("raw_content"):
             content = result['content']
         else:
+            raw_content_max_chars = _get_env_int("TAVILY_RAW_CONTENT_MAX_CHARS")
+            if raw_content_max_chars is None:
+                raw_content_max_chars = DEFAULT_TAVILY_RAW_CONTENT_MAX_CHARS
             # Summarize raw content for better processing
-            content = summarize_webpage_content(result['raw_content'][:MAX_CONTEXT_LENGTH])
+            content = summarize_webpage_content(result['raw_content'][:raw_content_max_chars])
 
         summarized_results[url] = {
             'title': result['title'],
@@ -325,7 +507,11 @@ def refine_draft_report(research_brief: Annotated[str, InjectedToolArg],
             "draft_report_len": len(draft_report or ""),
         },
     )
-    draft_report = writer_model.invoke([HumanMessage(content=draft_report_prompt)])
+    try:
+        draft_report = writer_model.invoke([HumanMessage(content=draft_report_prompt)])
+    except Exception:
+        logger.exception("Refine draft report failed")
+        raise
 
     logger.info(
         "Refined draft report complete",

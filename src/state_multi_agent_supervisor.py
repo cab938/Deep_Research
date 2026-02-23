@@ -7,7 +7,7 @@ research supervisor workflow, including coordination state and research tools.
 """
 
 import operator
-from typing_extensions import Annotated, TypedDict, Sequence
+from typing_extensions import Annotated, Optional, Sequence, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import tool
@@ -24,6 +24,8 @@ class SupervisorState(TypedDict):
 
     # Messages exchanged with supervisor for coordination and decision-making
     supervisor_messages: Annotated[Sequence[BaseMessage], add_messages]
+    # Task id for tracing and artifact export
+    task_id: Optional[str]
     # Detailed research brief that guides the overall research direction
     research_brief: str
     # Processed and structured notes ready for final report generation

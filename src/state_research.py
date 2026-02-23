@@ -7,7 +7,7 @@ the research agent workflow, including researcher state management and output sc
 """
 
 import operator
-from typing_extensions import TypedDict, Annotated, List, Sequence
+from typing_extensions import Annotated, List, Optional, Sequence, TypedDict
 from pydantic import BaseModel, Field
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -23,6 +23,7 @@ class ResearcherState(TypedDict):
     and raw research notes for detailed analysis.
     """
     researcher_messages: Annotated[Sequence[BaseMessage], add_messages]
+    task_id: Optional[str]
     tool_call_iterations: int
     research_topic: str
     compressed_research: str
@@ -38,6 +39,7 @@ class ResearcherOutputState(TypedDict):
     compressed_research: str
     raw_notes: Annotated[List[str], operator.add]
     researcher_messages: Annotated[Sequence[BaseMessage], add_messages]
+    task_id: Optional[str]
 
 # ===== STRUCTURED OUTPUT SCHEMAS =====
 

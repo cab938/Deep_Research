@@ -53,6 +53,7 @@ async def final_report_generation(state: AgentState):
             "research_brief_len": len(state.get("research_brief", "") or ""),
             "findings_count": len(notes),
             "draft_report_len": len(state.get("draft_report", "") or ""),
+            "task_id": state.get("task_id"),
         },
     )
 
@@ -64,13 +65,18 @@ async def final_report_generation(state: AgentState):
         user_request=state.get("user_request", "")
     )
 
-    final_report = await writer_model.ainvoke([HumanMessage(content=final_report_prompt)])
+    try:
+        final_report = await writer_model.ainvoke([HumanMessage(content=final_report_prompt)])
+    except Exception:
+        logger.exception("Final report generation failed")
+        raise
 
     logger.info(
         "Final report generation complete",
         extra={
             "final_report_len": len(final_report.content or ""),
             "notes_used": len(notes),
+            "task_id": state.get("task_id"),
         },
     )
 
